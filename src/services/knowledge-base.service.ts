@@ -1,277 +1,134 @@
-import { initSupabase, initPinecone, embeddings, VECTOR_STORE_CONFIG, FLOWISE_CONFIG, KnowledgeBaseSource } from '../config/knowledge-base.config';
-import { FlowiseService, FlowiseDocumentStore, UpsertDocumentParams } from './flowise.service';
-import axios from 'axios';
+import { embeddings, VECTOR_STORE_CONFIG, KnowledgeBaseSource } from '../config/knowledge-base.config';
+import { FlowiseService } from './flowise.service';
 
 export class KnowledgeBaseService {
-  private supabase;
-  private pinecone;
   private flowise: FlowiseService;
-  private initialized = false;
 
   constructor() {
-    this.supabase = initSupabase();
     this.flowise = new FlowiseService();
   }
 
-  async initialize() {
-    if (!this.initialized) {
-      this.pinecone = await initPinecone();
-      this.initialized = true;
-    }
-  }
-
-  async importFromFlowise(flowiseStoreId: string) {
+  async listDocumentStores() {
     try {
-      // Get all documents from Flowise
-      const chunks = await this.flowise.getChunks(flowiseStoreId, 'all', 1);
-      
-      // Import each chunk into our knowledge base
-      for (const chunk of chunks.chunks) {
-        await this.addDocument(
-          chunk.pageContent,
-          chunk.metadata,
-          KnowledgeBaseSource.SUPABASE // Store in Supabase for faster access
-        );
-      }
-
-      return {
-        success: true,
-        importedCount: chunks.chunks.length
-      };
-    } catch (error) {
-      console.error('Error importing from Flowise:', error);
-      throw error;
-    }
-  }
-
-  async addDocument(content: string, metadata: any = {}, source: KnowledgeBaseSource = KnowledgeBaseSource.SUPABASE) {
-    await this.initialize();
-    const embedding = await embeddings.embedQuery(content);
-
-    switch (source) {
-      case KnowledgeBaseSource.SUPABASE:
-        return this.addToSupabase(content, metadata, embedding);
-      case KnowledgeBaseSource.PINECONE:
-        return this.addToPinecone(content, metadata, embedding);
-      case KnowledgeBaseSource.FLOWISE:
-        return this.addToFlowise(content, metadata);
-      default:
-        throw new Error('Unsupported knowledge base source');
-    }
-  }
-
-  private async addToSupabase(content: string, metadata: any, embedding: number[]) {
-    try {
-      const { data, error } = await this.supabase
-        .from('documents')
-        .insert([{ content, metadata, embedding }])
-        .select();
-
-      if (error) throw error;
-      return data[0];
-    } catch (error) {
-      console.error('Error adding document to Supabase:', error);
-      throw error;
-    }
-  }
-
-  private async addToPinecone(content: string, metadata: any, embedding: number[]) {
-    try {
-      const index = this.pinecone.Index('your-index-name');
-      await index.upsert({
-        upsertRequest: {
-          vectors: [{
-            id: `doc_${Date.now()}`,
-            values: embedding,
-            metadata: { ...metadata, content }
-          }]
-        }
-      });
-      return { content, metadata };
-    } catch (error) {
-      console.error('Error adding document to Pinecone:', error);
-      throw error;
-    }
-  }
-
-  private async addToFlowise(content: string, metadata: any) {
-    const params: UpsertDocumentParams = {
-      metadata,
-      docStore: {
-        name: 'LobeChat Import',
-        description: 'Imported from LobeChat'
-      },
-      loader: {
-        name: 'text',
-        config: { text: content }
-      },
-      splitter: {
-        name: 'recursiveCharacterTextSplitter',
-        config: {}
-      },
-      embedding: {
-        name: 'openAIEmbeddings',
-        config: {
-          openAIApiKey: process.env.OPENAI_API_KEY
-        }
-      },
-      vectorStore: {
-        name: 'pinecone',
-        config: {
-          pineconeApiKey: process.env.PINECONE_API_KEY,
-          pineconeEnvironment: process.env.PINECONE_ENVIRONMENT
-        }
-      }
-    };
-
-    try {
-      const result = await this.flowise.upsertDocument('default', params);
-      return result;
-    } catch (error) {
-      console.error('Error adding document to Flowise:', error);
-      throw error;
-    }
-  }
-
-  async searchSimilarDocuments(query: string, sources: KnowledgeBaseSource[] = [KnowledgeBaseSource.SUPABASE]) {
-    await this.initialize();
-    const queryEmbedding = await embeddings.embedQuery(query);
-    
-    const results = await Promise.all(
-      sources.map(source => this.searchInSource(query, queryEmbedding, source))
-    );
-
-    // Combine and sort results by similarity
-    return results.flat().sort((a, b) => b.similarity - a.similarity);
-  }
-
-  private async searchInSource(query: string, queryEmbedding: number[], source: KnowledgeBaseSource) {
-    switch (source) {
-      case KnowledgeBaseSource.SUPABASE:
-        return this.searchInSupabase(queryEmbedding);
-      case KnowledgeBaseSource.PINECONE:
-        return this.searchInPinecone(queryEmbedding);
-      case KnowledgeBaseSource.FLOWISE:
-        return this.searchInFlowise(query);
-      default:
-        return [];
-    }
-  }
-
-  private async searchInSupabase(queryEmbedding: number[]) {
-    try {
-      const { data: documents, error } = await this.supabase.rpc(
-        'match_documents',
-        {
-          query_embedding: queryEmbedding,
-          match_threshold: VECTOR_STORE_CONFIG.matchThreshold,
-          match_count: VECTOR_STORE_CONFIG.matchCount,
-        }
-      );
-
-      if (error) throw error;
-      return documents;
-    } catch (error) {
-      console.error('Error searching in Supabase:', error);
-      return [];
-    }
-  }
-
-  private async searchInPinecone(queryEmbedding: number[]) {
-    try {
-      const index = this.pinecone.Index('your-index-name');
-      const queryResponse = await index.query({
-        queryRequest: {
-          vector: queryEmbedding,
-          topK: VECTOR_STORE_CONFIG.matchCount,
-          includeMetadata: true
-        }
-      });
-      
-      return queryResponse.matches?.map(match => ({
-        content: match.metadata?.content,
-        metadata: match.metadata,
-        similarity: match.score
-      })) || [];
-    } catch (error) {
-      console.error('Error searching in Pinecone:', error);
-      return [];
-    }
-  }
-
-  private async searchInFlowise(query: string) {
-    try {
-      const response = await this.flowise.queryVectorStore('default', query);
-      return response.docs.map((doc: any) => ({
-        content: doc.pageContent,
-        metadata: doc.metadata,
-        similarity: 1 // Flowise doesn't return similarity scores
+      const stores = await this.flowise.getAllDocumentStores();
+      return stores.map(store => ({
+        id: store.id,
+        name: store.name,
+        description: store.description || '',
+        documentCount: store.documentCount || 0,
       }));
     } catch (error) {
-      console.error('Error searching in Flowise:', error);
-      return [];
+      console.error('Error listing document stores:', error);
+      throw error;
     }
   }
 
-  async importAllFlowiseDocuments() {
+  async getDocumentStore(storeId: string) {
     try {
-      // Get all document stores from Flowise
-      const stores = await this.flowise.getAllDocumentStores();
-      
-      const results = [];
-      for (const store of stores) {
-        const result = await this.importFromFlowise(store.id);
-        results.push({
-          storeId: store.id,
-          storeName: store.name,
-          ...result
-        });
+      return await this.flowise.getDocumentStore(storeId);
+    } catch (error) {
+      console.error('Error getting document store:', error);
+      throw error;
+    }
+  }
+
+  async getDocumentChunks(storeId: string, documentId?: string) {
+    try {
+      const chunks = await this.flowise.getChunks(storeId, documentId || 'all', 1);
+      return chunks.chunks.map(chunk => ({
+        content: chunk.pageContent,
+        metadata: chunk.metadata,
+      }));
+    } catch (error) {
+      console.error('Error getting document chunks:', error);
+      throw error;
+    }
+  }
+
+  async searchDocuments(query: string, storeId?: string) {
+    try {
+      if (storeId) {
+        // Search in specific store
+        const response = await this.flowise.queryVectorStore(storeId, query);
+        return response.docs.map(doc => ({
+          content: doc.pageContent,
+          metadata: doc.metadata,
+          storeId,
+        }));
+      } else {
+        // Search across all stores
+        const stores = await this.flowise.getAllDocumentStores();
+        const results = await Promise.all(
+          stores.map(async store => {
+            try {
+              const response = await this.flowise.queryVectorStore(store.id, query);
+              return response.docs.map(doc => ({
+                content: doc.pageContent,
+                metadata: doc.metadata,
+                storeId: store.id,
+                storeName: store.name,
+              }));
+            } catch (error) {
+              console.error(`Error searching store ${store.id}:`, error);
+              return [];
+            }
+          })
+        );
+        return results.flat();
       }
-      
+    } catch (error) {
+      console.error('Error searching documents:', error);
+      throw error;
+    }
+  }
+
+  async addDocument(content: string, metadata: any = {}, storeId?: string) {
+    try {
+      const stores = storeId ? [storeId] : (await this.flowise.getAllDocumentStores()).map(s => s.id);
+      const results = await Promise.all(
+        stores.map(async id => {
+          try {
+            await this.flowise.upsertDocument(id, {
+              metadata,
+              docStore: {
+                name: metadata.title || 'LobeChat Document',
+                description: metadata.description || '',
+              },
+              loader: {
+                name: 'text',
+                config: { text: content }
+              },
+              splitter: {
+                name: 'recursiveCharacterTextSplitter',
+                config: {}
+              },
+              embedding: {
+                name: 'openAIEmbeddings',
+                config: {
+                  openAIApiKey: process.env.OPENAI_API_KEY
+                }
+              }
+            });
+            return { storeId: id, status: 'success' };
+          } catch (error) {
+            console.error(`Error adding document to store ${id}:`, error);
+            return { storeId: id, status: 'error', error };
+          }
+        })
+      );
       return results;
     } catch (error) {
-      console.error('Error importing all Flowise documents:', error);
+      console.error('Error adding document:', error);
       throw error;
     }
   }
 
-  async deleteDocument(id: number, source: KnowledgeBaseSource = KnowledgeBaseSource.SUPABASE) {
-    await this.initialize();
-    
-    switch (source) {
-      case KnowledgeBaseSource.SUPABASE:
-        return this.deleteFromSupabase(id);
-      case KnowledgeBaseSource.PINECONE:
-        return this.deleteFromPinecone(id);
-      default:
-        throw new Error('Unsupported delete operation for this source');
-    }
-  }
-
-  private async deleteFromSupabase(id: number) {
+  async deleteDocument(documentId: string, storeId: string) {
     try {
-      const { error } = await this.supabase
-        .from('documents')
-        .delete()
-        .match({ id });
-
-      if (error) throw error;
-      return true;
+      await this.flowise.deleteDocument(storeId, documentId);
+      return { success: true };
     } catch (error) {
-      console.error('Error deleting from Supabase:', error);
-      throw error;
-    }
-  }
-
-  private async deleteFromPinecone(id: number) {
-    try {
-      const index = this.pinecone.Index('your-index-name');
-      await index.delete1({
-        ids: [`doc_${id}`]
-      });
-      return true;
-    } catch (error) {
-      console.error('Error deleting from Pinecone:', error);
+      console.error('Error deleting document:', error);
       throw error;
     }
   }
