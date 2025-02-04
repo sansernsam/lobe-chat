@@ -320,6 +320,9 @@
     "vitest": "~1.2.2",
     "vitest-canvas-mock": "^0.3.3"
   },
+  "engines": {
+    "node": "18.x"
+  },
   "packageManager": "pnpm@9.15.4",
   "publishConfig": {
     "access": "public",
