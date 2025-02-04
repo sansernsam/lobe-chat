@@ -6,19 +6,13 @@ export const embeddings = new OpenAIEmbeddings({
   openAIApiKey: process.env.OPENAI_API_KEY,
 });
 
-// Flowise API configuration
-export const FLOWISE_CONFIG = {
-  apiUrl: process.env.FLOWISE_API_URL,
-  apiKey: process.env.FLOWISE_API_KEY,
-};
+// Initialize Supabase client
+export const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+);
 
-// Knowledge base sources
-export enum KnowledgeBaseSource {
-  FLOWISE = 'flowise',
+// Knowledge base types
+export enum KnowledgeType {
+  SUPABASE = 'supabase',
 }
-
-// Vector store configuration
-export const VECTOR_STORE_CONFIG = {
-  matchThreshold: 0.78,
-  matchCount: 5,
-};
