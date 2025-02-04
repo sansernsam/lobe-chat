@@ -1,5 +1,11 @@
 {
-  "buildCommand": "NODE_OPTIONS=--max-old-space-size=6144 npm run build",
-  "installCommand": "npm install",
-  "framework": "nextjs"
+  "buildCommand": "npm run build",
+  "installCommand": "npm install --legacy-peer-deps",
+  "framework": "nextjs",
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/node@18"
+    }
+  ]
 }
