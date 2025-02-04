@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { OpenAIEmbeddings } from 'langchain/embeddings/openai';
+import { OpenAIEmbeddings } from '@langchain/openai';
 
 // Initialize OpenAI embeddings
 export const embeddings = new OpenAIEmbeddings({
